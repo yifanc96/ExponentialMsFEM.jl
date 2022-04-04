@@ -48,7 +48,7 @@ function FEM_GlobalAssembly(FEMparam,PDEparam)
     println("[multithreading] using ", Threads.nthreads(), " threads")
     for i = 1:N_f
         @threads for j = 1:N_f 
-            
+
             local_K, local_f = FEM_LocalAssembly(FEMparam,PDEparam, i, j)
             # compute inner product in each elements
             for p = 1:4
@@ -145,6 +145,7 @@ function FEM_Solver(FEMparam,PDEparam)
     A, M, F = FEM_GlobalAssembly(FEMparam,PDEparam)
     sol = A\F
     @info "[Linear solver] linear system solved"
+    
     # N_f = FEMparam.Nf
     # result=reshape(sol,N_f+1,N_f+1)'
 
