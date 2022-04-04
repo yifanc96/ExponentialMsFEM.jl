@@ -27,3 +27,4 @@ Manifest.toml
 *.m
 code_small_size*
 Archive*
+.DS_Store
