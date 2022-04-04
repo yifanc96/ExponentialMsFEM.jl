@@ -1,6 +1,7 @@
 using SparseArrays
 using LinearAlgebra
 using Logging
+using ForwardDiff
 # PDEs
 abstract type AbstractPDEs end
 
@@ -42,8 +43,8 @@ function FEM_solver(FEMparam,PDEparam)
     sol = A\F
     @info "[Linear solver] linear system solved"
     N_f = FEMparam.Nf
-    result=reshape(sol,N_f+1,N_f+1)'
-    return result, M
+    # result=reshape(sol,N_f+1,N_f+1)'
+    return sol, M
 end
 
 function FEM_GlobalAssembly(FEMparam,PDEparam)
@@ -145,10 +146,19 @@ function afun(t,s)
             (1.1+sin(2*pi*s/epsilon4))/(1.1+cos(2*pi*t/epsilon4))+
             (1.1+cos(2*pi*t/epsilon5))/(1.1+sin(2*pi*s/epsilon5))+
             sin(4*s^2*t^2)+1);
+    # return 1.0
+end
+
+function u(x)
+    return sin(2*π*x[1])*sin(2π*x[2])*exp(x[1]+2*x[2])
 end
 
 function rhs(t,s)
-    return t^4-s^3+1;
+    x = [t,s]
+    result = -sum(ForwardDiff.gradient(x -> afun(x[1],x[2]), x).*ForwardDiff.gradient(u, x)) - afun(x[1],x[2])*tr(ForwardDiff.hessian(u,x))
+
+    return result
+    # return t^4-s^3+1;
 end
 
 
@@ -156,10 +166,21 @@ function bdy(t,s)
     return 0
 end
 
+function meshgrid(x,y)
+    xx = repeat(x',length(y),1)
+    yy = repeat(y,1,length(x))
+    return xx,yy
+end
 # grid generation
-Nf = 2^8
+Nf = 2^9
 FEMparam = FEM_UnifQuadMesh(Nf)
 PDEparam = VarElliptic(afun,rhs,bdy)
 @time FEMsol, M = FEM_solver(FEMparam,PDEparam)
-@info "[Error]"
+x = FEMparam.grid_x
+y = FEMparam.grid_y
+xx, yy = meshgrid(x, y)
+truth = [u([x[i],y[j]]) for j in 1:Nf+1 for i in 1:Nf+1]
+Linf = maximum(truth - FEMsol)
+L2 = sqrt(sum((truth - FEMsol).^2))/(Nf+1)
+@info "[Error] L2 $L2, Linf $Linf"
 
