@@ -1,6 +1,8 @@
 using SparseArrays
 using LinearAlgebra
 using Logging
+import Base.Threads: nthreads, @threads
+
 
 struct FEM_UnifQuadMesh{Ti,Tf}
     Nf::Ti # number of D.O.F in each dimension
@@ -43,8 +45,10 @@ function FEM_GlobalAssembly(FEMparam,PDEparam)
     F = zeros(nNodes);
     
     # run over all elements
+    println("[multithreading] using ", Threads.nthreads(), " threads")
     for i = 1:N_f
-        for j = 1:N_f  
+        @threads for j = 1:N_f 
+            
             local_K, local_f = FEM_LocalAssembly(FEMparam,PDEparam, i, j)
             # compute inner product in each elements
             for p = 1:4
