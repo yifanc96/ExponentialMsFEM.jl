@@ -10,6 +10,7 @@ struct VarElliptic <: AbstractPDEs
     a::Function
     rhs::Function
     bdy::Function
+    bdy_type::String
 end
 
 struct FEM_UnifQuadMesh{Ti,Tf}
@@ -42,8 +43,10 @@ function FEM_solver(FEMparam,PDEparam)
     A, M, F = FEM_GlobalAssembly(FEMparam,PDEparam)
     sol = A\F
     @info "[Linear solver] linear system solved"
-    N_f = FEMparam.Nf
+    # N_f = FEMparam.Nf
     # result=reshape(sol,N_f+1,N_f+1)'
+
+    # the ordering is that x moves first y second
     return sol, M
 end
 
@@ -52,21 +55,21 @@ function FEM_GlobalAssembly(FEMparam,PDEparam)
     # number of codes, including nodes on the boundary
     N_f = FEMparam.Nf
     nNodes = (N_f+1)*(N_f+1)
-    grid_x = FEMparam.grid_x
-    grid_y = FEMparam.grid_y
 
     # for sparse stiffness mtx and load matrix A, M construction
     Icol= zeros(16*N_f^2)
     Jrow= copy(Icol)
     Aval = copy(Icol)
     Mval = copy(Icol)
+
     # for right hand side construction
     F = zeros(nNodes);
     
     # run over all elements
     for i = 1:N_f
         for j = 1:N_f  
-            local_K, local_f = FEM_LocalAssembly(PDEparam, grid_x, grid_y, i, j)
+            local_K, local_f = FEM_LocalAssembly(FEMparam,PDEparam, i, j)
+            # compute inner product in each elements
             for p = 1:4
                 global_p = FEMparam.loc2glo(N_f, i, j, p);
                 for q = 1:4
@@ -75,11 +78,11 @@ function FEM_GlobalAssembly(FEMparam,PDEparam)
                     Icol[index] = global_p
                     Jrow[index] = global_q
                     Aval[index] = local_K[p, q]
-                    if p == q
+                    if p == q # same
                         Mval[index] = 1/9/N_f^2
-                    elseif p==q+2 || p==q-2
+                    elseif p==q+2 || p==q-2 # diagonal
                         Mval[index] = 1/36/N_f^2
-                    else 
+                    else # adjacent
                         Mval[index] = 1/18/N_f^2
                     end
                 end
@@ -91,21 +94,37 @@ function FEM_GlobalAssembly(FEMparam,PDEparam)
     # boundary location
     b = reduce(vcat,collect.([1:N_f+1,N_f+2:N_f+1:(N_f+1)*(N_f+1),2*(N_f+1):N_f+1:(N_f+1)*(N_f+1),N_f*N_f+N_f+2:(N_f+1)*(N_f+1)-1]))
 
+
     A = sparse(Icol,Jrow,Aval,nNodes,nNodes)
     M = sparse(Icol,Jrow,Mval,nNodes,nNodes)
-    A[b,:] .= 0; A[:,b] .= 0; F[b] .= 0; 
-    A[b,b] .= sparse(I, length(b),length(b));
+
+    # Dirichlet boundary condition
+    if PDEparam.bdy_type == "Dirichlet"
+        A[b,:] .= 0; 
+
+        # for Dirichlet zero bondary condition
+        # A[:,b] .= 0; F[b] .= 0;  
+
+        # for general Dirichlet boundary condition
+        F[1:N_f+1] .= PDEparam.bdy.(FEMparam.grid_x,0.0)
+        F[N_f+2:N_f+1:(N_f+1)*(N_f+1)] .= PDEparam.bdy.(0.0, FEMparam.grid_y[2:end])
+        F[2*(N_f+1):N_f+1:(N_f+1)*(N_f+1)] .= PDEparam.bdy.(1.0, FEMparam.grid_y[2:end])
+        F[N_f*N_f+N_f+2:(N_f+1)*(N_f+1)-1] .= PDEparam.bdy.(FEMparam.grid_x[2:end-1],1.0)
+        
+        A[b,b] .= sparse(I, length(b),length(b));
+    end
+
     @info "[Assembly] finish assembly of stiffness matrice"
     return A, M, F
 end
 
-function FEM_LocalAssembly(PDEparam, grid_x, grid_y, i, j)
+function FEM_LocalAssembly(FEMparam, PDEparam, i, j)
     # the stiffness matrix required locally to compute local nodal basis 
     # for the bilinear boundary value with 1 at node 
-    xlow = grid_x[i];
-    xhigh = grid_x[i+1];
-    ylow = grid_y[j];
-    yhigh = grid_y[j+1];
+    xlow = FEMparam.grid_x[i];
+    xhigh = FEMparam.grid_x[i+1];
+    ylow = FEMparam.grid_y[j];
+    yhigh = FEMparam.grid_y[j+1];
     
     x = (xlow+xhigh)/2;
     y = (ylow+yhigh)/2;
@@ -113,6 +132,7 @@ function FEM_LocalAssembly(PDEparam, grid_x, grid_y, i, j)
     local_K = zeros(4,4)
     local_f = zeros(4);
 
+    # mid-point quadrature
     for i = 1:4 
         for j = 1:4
             if i==j
@@ -125,7 +145,7 @@ function FEM_LocalAssembly(PDEparam, grid_x, grid_y, i, j)
         end
     end
     
-    for i=1:4
+    for i = 1:4
         local_f[i] = PDEparam.rhs(x,y)*(xhigh-xlow)^2/4;
     end
     
@@ -134,6 +154,7 @@ end
 
 
 
+## PDE and FEM parameters
 function afun(t,s)
     epsilon1 = 1/5;
     epsilon2 = 1/13;
@@ -150,7 +171,7 @@ function afun(t,s)
 end
 
 function u(x)
-    return sin(2*π*x[1])*sin(2π*x[2])*exp(x[1]+2*x[2])
+    return sin(0.5*π*x[1])*sin(π*x[2])*exp(x[1]+2*x[2])
 end
 
 function rhs(t,s)
@@ -161,26 +182,30 @@ function rhs(t,s)
     # return t^4-s^3+1;
 end
 
-
 function bdy(t,s)
-    return 0
+    return u([t,s])
 end
-
-function meshgrid(x,y)
-    xx = repeat(x',length(y),1)
-    yy = repeat(y,1,length(x))
-    return xx,yy
-end
-# grid generation
-Nf = 2^9
+bdy_type = "Dirichlet"
+PDEparam = VarElliptic(afun,rhs,bdy,bdy_type)
+Nf = 2^9 # Nf element each dimension
 FEMparam = FEM_UnifQuadMesh(Nf)
-PDEparam = VarElliptic(afun,rhs,bdy)
+
+
+## solver: get nodal values and mass matrix
 @time FEMsol, M = FEM_solver(FEMparam,PDEparam)
+
+## error: can use when truth exists
 x = FEMparam.grid_x
 y = FEMparam.grid_y
-xx, yy = meshgrid(x, y)
 truth = [u([x[i],y[j]]) for j in 1:Nf+1 for i in 1:Nf+1]
-Linf = maximum(truth - FEMsol)
-L2 = sqrt(sum((truth - FEMsol).^2))/(Nf+1)
-@info "[Error] L2 $L2, Linf $Linf"
+Linf = maximum(abs.(truth - FEMsol)) / maximum(abs.(truth))
+L2 = sqrt((truth - FEMsol)'*M*(truth - FEMsol) / (truth'*M*truth))
+@info "[Error] Relative L2 $L2, Linf $Linf"
 
+# ## plot
+# function meshgrid(x,y)
+#     xx = repeat(x',length(y),1)
+#     yy = repeat(y,1,length(x))
+#     return xx,yy
+# end
+# xx, yy = meshgrid(x, y)
