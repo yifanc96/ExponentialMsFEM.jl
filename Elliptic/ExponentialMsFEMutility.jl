@@ -1,6 +1,6 @@
 function ExponentialMsFEM_GlobalAssembly(MsFEMparam, PDEparam, l)
-    # N_c coarse D.O.F each dimension
-    # N_f coarse D.O.F each dimension 
+    # N_c num of coarse intervals each dimension
+    # N_f num of fine intervals in each coarse interval
     # l: num of edge basis functions per edge  
     N_c = MsFEMparam.Nc
     N_f = MsFEMparam.Nf
@@ -8,8 +8,9 @@ function ExponentialMsFEM_GlobalAssembly(MsFEMparam, PDEparam, l)
     coarse_y = MsFEMparam.coarse_y
 
     Nfinc = N_f+1;
-    nNodes = (N_c+1)*(N_c+1)+2*N_c*(N_c+1)*N_basis;
     N_basis = l+1;
+    nNodes = (N_c+1)*(N_c+1)+2*N_c*(N_c+1)*N_basis;
+    
 
     # sparse assembling
     numb = (4+4*N_basis)^2*(N_c)^2;
@@ -23,18 +24,18 @@ function ExponentialMsFEM_GlobalAssembly(MsFEMparam, PDEparam, l)
     # there might be inner patches, patches on the edge, and nodal patches
     for i = 1:N_c
         for j = 1:N_c  
-            [value,k, f] = MsFEM_LocalAssembly(PDEparam, coarse_x, coarse_y, i, j,N_f, N_basis);
+            [value,k, f] = ExponentialMsFEM_LocalAssembly(PDEparam, coarse_x, coarse_y, i, j,N_f, N_basis);
             val[:,:,(i-1)*N_c+j] = value;
             for p = 1:count
-                if p<5
+                if p<5 # nodal basis
                     global_p = PDEparam.loc2glo(N_c, i, j, p);
-                elseif p<5+N_basis
+                elseif p<5+N_basis # first edge
                     global_p = (i-1+(j-1)*N_c)*N_basis+(N_c+1)^2+p-4;
-                elseif p<5+2*N_basis
+                elseif p<5+2*N_basis # second edge
                     global_p = (i-1+(j)*N_c)*N_basis+(N_c+1)^2+p-4-N_basis;
-                elseif p<5+3*N_basis
+                elseif p<5+3*N_basis # third edge
                     global_p = (i-1+(j-1)*(N_c+1)+N_c*(N_c+1))*N_basis+(N_c+1)^2+p-4-2*N_basis;
-                else
+                else # last edge
                     global_p = (i+(j-1)*(N_c+1)+N_c*(N_c+1))*N_basis+(N_c+1)^2+p-4-3*N_basis;
                 end
                 for q = 1:count
@@ -59,6 +60,7 @@ function ExponentialMsFEM_GlobalAssembly(MsFEMparam, PDEparam, l)
         end
     end
     
+    # location
     b = zeros(4*(N_c)+4*N_c*N_basis);
     b[1:4*(N_c)+2*N_c*N_basis]=reduce(vcat,collect.([
         1:N_c+1,N_c+2:N_c+1:(N_c+1)*(N_c+1),2*(N_c+1):N_c+1:(N_c+1)*(N_c+1),
@@ -72,6 +74,7 @@ function ExponentialMsFEM_GlobalAssembly(MsFEMparam, PDEparam, l)
             i+N_c*N_basis+N_c*(N_c+1)*N_basis+(N_c+1)^2:N_basis*(N_c+1):i+N_c*N_basis+N_basis*(N_c+1)*(N_c-1)+N_c*(N_c+1)*N_basis+(N_c+1)^2])); 
     end
 
+    # assemby
     A = sparse(I,J,K,nNodes,nNodes);
     A[b,:] .= 0; A[:,b] .= 0; F[b] .= 0; 
     A[b,b] .= sparse(LinearAlgebra.I, length(b),length(b));
@@ -79,7 +82,7 @@ function ExponentialMsFEM_GlobalAssembly(MsFEMparam, PDEparam, l)
     return A, F
 end
 
-function MsFEM_LocalAssembly(PDEparam, X, Y, m, n, N_f, N_basis) 
+function ExponentialMsFEM_LocalAssembly(PDEparam, X, Y, m, n, N_f, N_basis) 
     N_c = length(X)-1;
 
     xlow = coarse_x[i];
@@ -89,23 +92,25 @@ function MsFEM_LocalAssembly(PDEparam, X, Y, m, n, N_f, N_basis)
     x = collect(LinRange(xlow, xhigh, N_f+1))
     y = collect(LinRange(ylow, yhigh, N_f+1))
 
+    # location
     b=reduce(vcat,collect.([1:N_f+1,N_f+2:N_f+1:(N_f+1)*(N_f+1),2*(N_f+1):N_f+1:(N_f+1)*(N_f+1),N_f*N_f+N_f+2:(N_f+1)*(N_f+1)-1]))
 
+    # edge space (matrix)
     f=collect.([LinRange(1, 0, N_f+1), LinRange(1-1/N_f, 0, N_f),zeros(1,N_f),zeros(1,N_f-1);
         LinRange(0, 1, N_f+1),zeros(1,N_f),LinRange(1-1/N_f, 0, N_f),zeros(1,N_f-1);
         zeros(1,N_f+1),zeros(1,N_f),LinRange(1/N_f, 1, N_f),LinRange(1/N_f, 1-1/N_f, N_f-1);
         zeros(1,N_f+1),LinRange(1/N_f, 1, N_f),zeros(1,N_f),LinRange(1-1/N_f, 1/N_f, N_f-1)]); # need to update
 
-    A = basefun(MsFEMparam, PDEparam, X, Y, m, n, N_f);
+    A = basefun(MsFEMparam, PDEparam, X, Y, m, n, N_f); # harmonic extension matrix
     B = A;
     F = -A[:,b] * f';
     A[b,:] .= 0; A[:,b] .= 0; F[b,:] .= f'; 
     A[b,b] .= sparse(I, length(b),length(b));
-    value = A\F;
+    value = A\F; # get all harmonic extended solutions
 
     # edge basis
     count = 4;
-    if n>1
+    if n>1 # (m,n) location
         [L1,L2,N] = harmext(MsFEMparam, PDEparam, X, Y, m, n-1, N_f,1);
         [R,P,bub] = restrict(X, Y, m, n-1,N_f,1);
         [V,D] = eigs(R'*N*R,P,N_basis);
