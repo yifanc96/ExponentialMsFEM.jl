@@ -19,7 +19,7 @@ struct FEM_2dUnifQuadMesh{Ti,Tf}
 end
 
 # store the stiffness and mass matrix
-struct FEM_2dMatrices{Ti,Tf}
+struct FEM_store{Ti,Tf}
     A::SparseMatrixCSC{Tf,Ti}
     M::SparseMatrixCSC{Tf,Ti}
 end
@@ -62,15 +62,15 @@ function FEM_2dUnifQuadMesh(Ne)
 end
 
 
-function FEM_StiffnMassAseembly(FEMparam,PDEparam)
+function FEM_StiffnMassAssembly(FEMparam,PDEparam)
     d = 2
     Ne = FEMparam.Ne
 
     # for sparse stiffness mtx A, and mass matrix M construction
-    Icol= zeros(16*Ne^2) # 16*Ne^2: Ne^2 elements, each one leads to 4^2 edge interactions
-    Jrow= copy(Icol)
-    Aval = copy(Icol)
-    Mval = copy(Icol)
+    Irow= zeros(16*Ne^2) # 16*Ne^2: Ne^2 elements, each one leads to 4^2 edge interactions
+    Jcol= copy(Irow)
+    Aval = copy(Irow)
+    Mval = copy(Irow)
     
     println("[multithreading] using ", Threads.nthreads(), " threads")
     # run over all elements
@@ -84,24 +84,24 @@ function FEM_StiffnMassAseembly(FEMparam,PDEparam)
                 for q = 1:4
                     index = 16*Ne*(i-1)+16*(j-1)+4*(p-1)+q
                     global_q = FEMparam.ElemNode_loc2glo(Ne, i, j, q);
-                    Icol[index] = global_p
-                    Jrow[index] = global_q
+                    Irow[index] = global_p
+                    Jcol[index] = global_q
                     Aval[index] = local_A[p, q]
                     Mval[index] = local_M[p, q]
                 end
             end
         end
     end
-    A = sparse(Icol,Jrow,Aval,(Ne+1)^d,(Ne+1)^d)
-    M = sparse(Icol,Jrow,Mval,(Ne+1)^d,(Ne+1)^d)
+    A = sparse(Irow,Jcol,Aval,(Ne+1)^d,(Ne+1)^d)
+    M = sparse(Irow,Jcol,Mval,(Ne+1)^d,(Ne+1)^d)
     @info "[Assembly] finish assembly of stiffness and mass matrice"
-    return FEM_2dMatrices(A,M)
+    return FEM_store(A,M)
 end
 
-function FEM_BdyRhsAssembly(FEMparam,PDEparam,FEMmtx)
+function FEM_BdyRhsAssembly(FEMparam,PDEparam,FEMstore)
     
-    A = copy(FEMmtx.A) # stiffness matrix for solving the systen
-    M = FEMmtx.M
+    A = copy(FEMstore.A) # stiffness matrix for solving the systen
+    M = FEMstore.M
 
     # right hand side
     Ne = FEMparam.Ne
@@ -157,8 +157,8 @@ function FEM_LocalAssembly(FEMparam, PDEparam, i, j)
     ylow = FEMparam.Grid_y[j];
     yhigh = FEMparam.Grid_y[j+1];
     
-    mid_x = (xlow+xhigh)/2;
-    mid_y = (ylow+yhigh)/2;
+    xmid = (xlow+xhigh)/2;
+    ymid = (ylow+yhigh)/2;
     
     local_A = zeros(4,4)
     local_M = copy(local_A)
@@ -168,13 +168,13 @@ function FEM_LocalAssembly(FEMparam, PDEparam, i, j)
     for i = 1:4 
         for j = 1:4
             if i==j
-                local_A[i,j] = 2/3*PDEparam.a(mid_x,mid_y);
+                local_A[i,j] = 2/3*PDEparam.a(xmid,ymid);
                 local_M[i,j] = 1/9/Ne^2 # exact
             elseif i==j+2 || i==j-2
-                local_A[i,j] = -1/3*PDEparam.a(mid_x,mid_y);
+                local_A[i,j] = -1/3*PDEparam.a(xmid,ymid);
                 local_M[i,j] = 1/36/Ne^2
             else 
-                local_A[i,j] = -1/6*PDEparam.a(mid_x,mid_y);
+                local_A[i,j] = -1/6*PDEparam.a(xmid,ymid);
                 local_M[i,j] = 1/18/Ne^2
             end
         end
@@ -187,19 +187,19 @@ end
 # domain [0,1]*[0,1], Ne is the number of interior DOF in each dimension
 function FEM_Solver(FEMparam,PDEparam)
     # FEM for VarElliptic, uniform quadrilaternal mesh, so we only need one parameter Ne that is the number of interior DOF in each dimension, to fully characterize the mesh
-    FEMmtx = FEM_StiffnMassAseembly(FEMparam,PDEparam)
-    A, F = FEM_BdyRhsAssembly(FEMparam,PDEparam,FEMmtx)
+    FEMstore = FEM_StiffnMassAssembly(FEMparam,PDEparam)
+    A, F = FEM_BdyRhsAssembly(FEMparam,PDEparam,FEMstore)
     sol = A\F
     @info "[Linear solver] linear system solved"
     
     # result=reshape(sol,Ne+1,Ne+1)'
     # the ordering is that x moves first y second
-    return sol, FEMmtx
+    return sol, FEMstore
 end
 
 ## subsequent solve
-function FEM_SubsequentSolve(FEMparam,PDEparam,FEMmtx)
-    A, F = FEM_BdyRhsAssembly(FEMparam,PDEparam,FEMmtx)
+function FEM_SubsequentSolve(FEMparam,PDEparam,FEMstore)
+    A, F = FEM_BdyRhsAssembly(FEMparam,PDEparam,FEMstore)
     sol = A\F
     @info "[Linear solver] linear system solved"
     return sol

@@ -2,7 +2,7 @@ include("PDEstruct.jl")
 include("FEMutility.jl")
 using Logging
 using ForwardDiff
-using BenchmarkTools
+# using BenchmarkTools
 using PyPlot
 
 ## PDE parameters
@@ -69,15 +69,15 @@ PDEparam = VarElliptic(afun,rhs,bdy_type, bdy_Diri, bdy_Neum, bdy_Robin)
 
 
 ## FEM parameters
-Ne = 2^9 # Ne elements each dimension
+Ne = 2^5 # Ne elements each dimension
 FEMparam = FEM_2dUnifQuadMesh(Ne)
 
 
 ## Solver: get nodal values and mass matrix
 # assembly + linear solve
-@time FEMsol, FEMmtx = FEM_Solver(FEMparam,PDEparam)
+@time FEMsol, FEMstore = FEM_Solver(FEMparam,PDEparam)
 # subsequent linear solve; rhs and bdy can be different 
-@time FEMsol = FEM_SubsequentSolve(FEMparam,PDEparam,FEMmtx)
+@time FEMsol = FEM_SubsequentSolve(FEMparam,PDEparam,FEMstore)
 
 
 ## error: can use when truth exists
@@ -85,8 +85,8 @@ x = FEMparam.Grid_x
 y = FEMparam.Grid_y
 truth = [u([x[i],y[j]]) for j in 1:Ne+1 for i in 1:Ne+1]
 Linf = maximum(abs.(truth - FEMsol)) / maximum(abs.(truth))
-L2 = sqrt((truth - FEMsol)'*FEMmtx.M*(truth - FEMsol) / (truth'*FEMmtx.M*truth))
-energy = sqrt((truth - FEMsol)'*FEMmtx.A*(truth - FEMsol) / (truth'*FEMmtx.A*truth))
+L2 = sqrt((truth - FEMsol)'*FEMstore.M*(truth - FEMsol) / (truth'*FEMstore.M*truth))
+energy = sqrt((truth - FEMsol)'*FEMstore.A*(truth - FEMsol) / (truth'*FEMstore.A*truth))
 @info "[Error] Relative energy err $energy, Relative L2 $L2, Linf $Linf"
 
 

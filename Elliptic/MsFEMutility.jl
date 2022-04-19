@@ -1,17 +1,30 @@
+using SparseArrays
+using LinearAlgebra
+using Logging
+import Base.Threads: nthreads, @threads
+
 struct MsFEM_2d2ScaleUnifQuadMesh{Ti,Tf}
     Nce::Ti # number of coarse elements in each dimension
-    Nfe::Ti # number of intervals in each coarse element
+    Nfe::Ti # number of fine elements in each coarse element
+    Ne::Ti # number of fine elements in each dimension
     CGrid_x::Vector{Tf} # coarse uniform grid in x axis, boundary included
     CGrid_y::Vector{Tf} # coarse uniform grid in y axis, boundary included
     ElemNode_loc2glo::Function # local index (node of an element) to global index (global indexed node); one runs over i first then j
     # all but the first attribute are automatically generated
 end
 
+struct MsFEM_store{Ti,Tf}
+    BasisFuns::Array{Tf, 4} # basisfuns in each element
+    Fine_localAs::Matrix{SparseMatrixCSC{Tf,Ti}}
+    Fine_localMs::Matrix{SparseMatrixCSC{Tf,Ti}}
+    A::SparseMatrixCSC{Tf,Ti}
+end
+
 # constructor
-function MsFEM_2ScaleUnifQuadMesh(Nc, Nf)
-    x = collect(LinRange(0, 1, Nc+1))
+function MsFEM_2d2ScaleUnifQuadMesh(Nce, Nfe)
+    x = collect(LinRange(0, 1, Nce+1))
     y = copy(x)
-    function ElementNode_loc2glo(N, i, j, ind_node)
+    function ElemNode_loc2glo(N, i, j, ind_node)
         # N: number of elements in one direction
         # i,j is the location of the element
         # edge marks the index of the edge (from 1 to 4, from bottom to top)
@@ -23,326 +36,265 @@ function MsFEM_2ScaleUnifQuadMesh(Nc, Nf)
         return global_idx  
     end
 
-    @info "[Mesh generation] mesh generated, $(Nce+1) coarsde nodes in each dimension"
-    return MsFEM_2d2ScaleUnifQuadMesh(Nce,Nfe,x,y,ElementNode_loc2glo)
+    @info "[Mesh generation] mesh generated, $(Nce+1) coarse nodes a in each dimension"
+    @info "[Mesh generation] in each coarse element, $(Nfe+1) fine nodes; in total $(Nce*Nfe+1) nodes in each dimension"
+
+    return MsFEM_2d2ScaleUnifQuadMesh(Nce,Nfe,Nce*Nfe,x,y,ElemNode_loc2glo)
 end
 
-
-function MsFEM_GlobalAssembly(MsFEMparam, PDEparam)
-    # Nc num of coarse elements each dimension
-    # Nf num of fine elements in each coarse element
-    d = 2
-    Nc = MsFEMparam.Nc
-    Nf = MsFEMparam.Nf
-
-    nNodes = (Nc+1)^d
+function MsFEM_StiffnMassAssembly(MsFEMparam, PDEparam)
+    # Nce num of coarse elements each dimension
+    # Nfe num of fine elements in each coarse element
+    Nce = MsFEMparam.Nce
     
     # sparse assembling
-    numb = (4)^2*(Nc)^2; # number of edges (repeated counting)
-    Icol = zeros(numb)
-    Jrow = copy(I)
-    Aval = copy(I)
-    F = zeros(nNodes);
+    Irow = zeros(16*(Nce)^2)
+    Jcol = copy(Irow)
+    Aval = copy(Irow)
     count = 4;
-    val = zeros((Nf+1)^2,count,Nc^2);
-    
+    LocalBasisFuns = zeros((Nfe+1)^2,count,Nce,Nce);
+    Fine_localAs = Matrix{SparseMatrixCSC{Float64,Int}}(undef,Nce,Nce)
+    Fine_localMs = copy(Fine_localAs)
     # there might be inner patches, patches on the edge, and nodal patches
     # run over coarse patches
-    for i = 1:Nc
-        for j = 1:Nc  
-            [value,k, f] = MsFEM_LocalAssembly(MsFEMparam, PDEparam, i, j);
-            val[:,:,(i-1)*Nc+j] = value; # store basis functions
+    println("[multithreading] using ", Threads.nthreads(), " threads")
+    @threads for ci = 1:Nce
+        for cj = 1:Nce 
+            coarse_localbasis, coarse_localA, fine_localA, fine_localM = MsFEM_LocalBasis(MsFEMparam, PDEparam, ci, cj);
+            LocalBasisFuns[:,:,ci,cj] = coarse_localbasis; # store basis functions
+            Fine_localAs[ci,cj] = fine_localA
+            Fine_localMs[ci,cj] = fine_localM
+
             for p = 1:count
-                global_p = MsFEMparam.ElementNode_loc2glo(Nc, i, j, p);
+                global_p = MsFEMparam.ElemNode_loc2glo(Nce, ci, cj, p);
                 for q = 1:count
-                    global_q = MsFEMparam.ElementNode_loc2glo(Nc, i, j, q);
-                    index = 16*(Nc)*(i-1)+16*(j-1)+(4)*(p-1)+q;
-                    Icol[index] = global_p;
-                    Jrow[index] = global_q;
-                    Aval[index] = k[p, q];
+                    global_q = MsFEMparam.ElemNode_loc2glo(Nce, ci, cj, q);
+                    index = 16*(Nce)*(ci-1)+16*(cj-1)+(4)*(p-1)+q;
+                    Irow[index] = global_p;
+                    Jcol[index] = global_q;
+                    Aval[index] = coarse_localA[p, q];
                 end
-                F[global_p] = F[global_p] + f[p];
             end
         end
     end
-    
-    # location
-    b = reduce(vcat,collect.([
-        1:Nc+1,Nc+2:Nc+1:(Nc+1)*(Nc+1),2*(Nc+1):Nc+1:(Nc+1)*(Nc+1),
-        Nc*Nc+Nc+2:(Nc+1)*(Nc+1)-1,(Nc+1)^2+1:(Nc+1)^2
-        ]));
-
-    # assemby
-    if PDEparam.bdy_type == "Dirichlet"
-        A[b,:] .= 0; 
-
-        # for general Dirichlet boundary condition
-        F[1:Nc+1] .= PDEparam.bdy.(FEMparam.coarse_x,0.0)
-        F[Nc+2:Nc+1:(Nc+1)*(Nc+1)] .= PDEparam.bdy.(0.0, FEMparam.coarse_y[2:end])
-        F[2*(Nc+1):Nc+1:(Nc+1)*(Nc+1)] .= PDEparam.bdy.(1.0, FEMparam.coarse_y[2:end])
-        F[Nc*Nc+Nf+2:(Nc+1)*(Nc+1)-1] .= PDEparam.bdy.(FEMparam.coarse_x[2:end-1],1.0)
-        
-        A[b,b] .= sparse(I, length(b),length(b));
-    else
-        @info "other boundary condition not supported now"
-    end
-
+    A = sparse(Irow,Jcol,Aval,(Nce+1)^2,(Nce+1)^2)
     @info "[Assembly] finish assembly of stiffness matrice"
     
-    return A, F, val
+    return MsFEM_store(LocalBasisFuns,Fine_localAs,Fine_localMs,A)
 end
 
-function MsFEM_LocalAssembly(MsFEMparam, PDEparam, i, j) 
+function MsFEM_LocalBasis(MsFEMparam, PDEparam, ci, cj) 
 
-    Nf = MsFEMparam.Nf
-
-    xlow = coarse_x[i];
-    xhigh = coarse_x[i+1];
-    ylow = coarse_y[j];
-    yhigh = coarse_y[j+1];
-    x = collect(LinRange(xlow, xhigh, Nf+1))
-    y = collect(LinRange(ylow, yhigh, Nf+1))
+    Nfe = MsFEMparam.Nfe
 
     # boundary location
     b = reduce(vcat,collect.(
-        [1:Nf+1,
-        Nf+2:Nf+1:(Nf+1)*(Nf+1),
-        2*(Nf+1):Nf+1:(Nf+1)*(Nf+1),
-        Nf*Nf+Nf+2:(Nf+1)*(Nf+1)-1]
+        [1:Nfe+1,
+        Nfe+2:Nfe+1:(Nfe+1)*(Nfe+1),
+        2*(Nfe+1):Nfe+1:(Nfe+1)*(Nfe+1),
+        Nfe*Nfe+Nfe+2:(Nfe+1)*(Nfe+1)-1]
         )
     )
 
     # linear boundary conditions
     vec_bd_f = reduce(vcat, collect.(
-        [LinRange(1, 0, Nf+1), LinRange(1-1/Nf, 0, Nf), zeros(1,Nf), zeros(1,Nf-1), 
-        LinRange(0, 1, Nf+1), zeros(1,Nf), LinRange(1-1/Nf, 0, Nf), zeros(1,Nf-1),
-        zeros(1,Nf+1), zeros(1,Nf), LinRange(1/Nf, 1, Nf), LinRange(1/Nf, 1-1/Nf, Nf-1),
-        zeros(1,Nf+1), LinRange(1/Nf, 1, Nf), zeros(1,Nf), LinRange(1-1/Nf, 1/Nf, Nf-1)]
+        [LinRange(1, 0, Nfe+1), LinRange(1-1/Nfe, 0, Nfe), zeros(Nfe), zeros(Nfe-1), 
+        LinRange(0, 1, Nfe+1), zeros(Nfe), LinRange(1-1/Nfe, 0, Nfe), zeros(Nfe-1),
+        zeros(Nfe+1), zeros(Nfe), LinRange(1/Nfe, 1, Nfe), LinRange(1/Nfe, 1-1/Nfe, Nfe-1),
+        zeros(Nfe+1), LinRange(1/Nfe, 1, Nfe), zeros(Nfe), LinRange(1-1/Nfe, 1/Nfe, Nfe-1)]
         )
     )
-    bd_f = reshape(vec_bd_f, 4*Nf, 4) # 4 edges
+    bd_f = reshape(vec_bd_f, 4*Nfe, 4) # 4 edges
 
-    # f = collect.([LinRange(1, 0, Nf+1), LinRange(1-1/Nf, 0, Nf),zeros(1,Nf),zeros(1,Nf-1);
-    #     LinRange(0, 1, Nf+1),zeros(1,Nf),LinRange(1-1/Nf, 0, Nf),zeros(1,Nf-1);
-    #     zeros(1,Nf+1),zeros(1,Nf),LinRange(1/Nf, 1, Nf),LinRange(1/Nf, 1-1/Nf, Nf-1);
-    #     zeros(1,Nf+1),LinRange(1/Nf, 1, Nf),zeros(1,Nf),LinRange(1-1/Nf, 1/Nf, Nf-1)]); # need to update
-
-    A = basefun(MsFEMparam, PDEparam, X, Y, m, n, Nf); # harmonic extension matrix
-    local_A = copy(A); # local inner product A
-    A[b,:] .= 0; 
-    F = zeros((Nf+1)^2, 4)
+    fine_localA, fine_localM = MsFEM_LocalHarmExt(MsFEMparam, PDEparam, ci, cj); # harmonic extension matrix
+    Diri_A = copy(fine_localA); # local inner product A
+    Diri_A[b,:] .= 0; 
+    F = zeros((Nfe+1)^2, 4)
     F[b,:] = bd_f
-    A[b,b] .= sparse(I, length(b),length(b));
-    local_basis = A\F
-    local_K = local_basis'*local_A*local_basis; # energy inner product 
+    Diri_A[b,b] .= sparse(I, length(b),length(b));
 
-    rhs_F = zeros(Nf^2,count);
-    for u = 1:Nf
-        for v = 1:Nf
-            for x1=0:1
-                for y1=0:1
-                    xf=(x(u+1)+x(u))/2;
-                    yf=(y(v+1)+y(v))/2;
-                    F[v*Nf+u-Nf,:] = F[v*Nf+u-Nf,:] + PDEparam.rhs(xf,yf)*local_basis[(v+y1-1)*(Nf+1)+u+x1,:]*(x(2)-x(1))^2/4;
-                end
-            end
-        end
-    end
-    f = sum(F);
-    return local_basis, local_K, local_f
+    coarse_localbasis = Diri_A\F
+    coarse_localA = coarse_localbasis'*fine_localA*coarse_localbasis; # energy inner product 
+
+    return coarse_localbasis, coarse_localA, fine_localA, fine_localM
 end
 
-function basefun(MsFEMparam, PDEparam, X, Y, m, n, N_f)
-    # % solve a combination of fine basis functions, assembling the stiffness
-    # % matrix
-    
-    # % the function serves as to solve local boundary value problem on the 
-    # % coarse mesh, based on the stiffness matrix in "elementstiff1"
-    
-    # % for the sake of simplicity, we temporarily use nodes of the fine mesh
-    # % as the same nodes that we use when we invoke numerical quadrature to
-    # % assemble the global stiffness matrix, the rationale being that we
-    # % can either increase the scale of fine mesh or increase the quadrature 
-    # % accuracy if we want to do higher order.... (because locally on fine
-    # % meshes, the basis function is simply a linear function
-    
-    # % setting parameters H is the size of the coarse mesh, N is the number of
-    # %nodes on each coarse rectangular, i.e. fine mesh size is H/N
-    
-    
-    # %N needs to be inputted !!!!
-    
-    x = collect(LinRange(X(m), X(m+1), N_f+1));
-    y = collect(LinRange(Y(n), Y(n+1), N_f+1));
-    nNodes = (N_f+1)*(N_f+1);
+function MsFEM_LocalHarmExt(MsFEMparam, PDEparam, ci, cj)
+
+    Nfe = MsFEMparam.Nfe
+
+    xlow = MsFEMparam.CGrid_x[ci];
+    xhigh = MsFEMparam.CGrid_x[ci+1];
+    ylow = MsFEMparam.CGrid_y[cj];
+    yhigh = MsFEMparam.CGrid_y[cj+1];
+    x = collect(LinRange(xlow, xhigh, Nfe+1))
+    y = collect(LinRange(ylow, yhigh, Nfe+1))
 
     # sparse assembling
-    I = zeros(16*N_f^2,1);
-    J = copy(I)
-    K = copy(I)
+    Irow = zeros(16*Nfe^2);
+    Jcol = copy(Irow)
+    Aval = copy(Irow)
+    Mval = copy(Irow)
     
-    for i = 1:N_f
-        for j = 1:N_f  
-            [k] = elementstiff1(PDEparam, x, y, i, j);
+    for fi = 1:Nfe
+        for fj = 1:Nfe
+            local_A, local_M = MsFEM_LocalHarmExt_MatrixAssemby(MsFEMparam, PDEparam, x, y, fi, fj);
             for p = 1:4
-                global_p = MsFEMparam.loc2glo(N_f, i, j, p);
+                global_p = MsFEMparam.ElemNode_loc2glo(Nfe, fi, fj, p);
                 for q = 1:4
-                    index=16*N_f*(i-1)+16*(j-1)+4*(p-1)+q;
-                    global_q = MsFEMparam.loc2glo(N_f, i, j, q);
-                    I[index] = global_p;
-                    J[index] = global_q;
-                    K[index] = k[p, q];
+                    index=16*Nfe*(fi-1)+16*(fj-1)+4*(p-1)+q;
+                    global_q = MsFEMparam.ElemNode_loc2glo(Nfe, fi, fj, q);
+                    Irow[index] = global_p
+                    Jcol[index] = global_q
+                    Aval[index] = local_A[p, q]
+                    Mval[index] = local_M[p, q]
                 end
             end
         end
     end
-    # assemble boundary
-    A = sparse(I,J,K,nNodes,nNodes);
-    return A
+    A = sparse(Irow,Jcol,Aval,(Nfe+1)^2,(Nfe+1)^2)
+    M = sparse(Irow,Jcol,Mval,(Nfe+1)^2,(Nfe+1)^2)
+    return A, M
 end
     
-function elementstiff1(PDEparam, X, Y, m, n)
-    # %the stiffness matrix required locally to compute local nodal basis 
-    # %for the bilinear boundary value with 1 at node "node"
+function MsFEM_LocalHarmExt_MatrixAssemby(MsFEMparam, PDEparam, x, y, i, j)
     
-    # %X Y are the fine mesh, we shall use local bilinear basis on the 
-    # %fine mesh as basis to compute the harmonic problem for bilinear
-    # %boundary value problem on the coarse mesh
-    
-    # %H is the size of the coarse mesh 
-    
-    
-    # %H, nSamples and coefficients a needs to be inputted  !!!!!!!!!
-    
-    # %nSamples = 3; % sample points in trapz in each direction
-    K = zeros(4, 4);
-    xlow = X[m];
-    xhigh = X[m+1];
-    ylow = Y[n];
-    yhigh = Y[n+1];
-    
-    x = (xlow+xhigh)/2;
-    y = (ylow+yhigh)/2;
+    Ne = MsFEMparam.Ne
+    local_A = zeros(4,4)
+    local_M = copy(local_A)
+
+    xlow = x[i];
+    xhigh = x[i+1];
+    ylow = y[j];
+    yhigh = y[j+1];
+    xmid = (xlow+xhigh)/2;
+    ymid = (ylow+yhigh)/2;
     
     for i = 1:4 
         for j = 1:4
             if i==j
-                K[i, j] = 2/3*PDEparam.a(x,y);
+                local_A[i,j] = 2/3*PDEparam.a(xmid,ymid);
+                local_M[i,j] = 1/9/Ne^2 # exact
             elseif i==j+2 || i==j-2
-                    K[i,j] = -1/3*PDEparam.a(x,y);
+                local_A[i,j] = -1/3*PDEparam.a(xmid,ymid);
+                local_M[i,j] = 1/36/Ne^2
             else 
-                K[i,j] = -1/6*PDEparam.a(x,y);
+                local_A[i,j] = -1/6*PDEparam.a(xmid,ymid);
+                local_M[i,j] = 1/18/Ne^2
             end
         end
     end
-    return K
+    return local_A, local_M
 end
+
+function MsFEM_BdyRhsAssembly(MsFEMparam, PDEparam, MsFEMstore)
+    A = copy(MsFEMstore.A)
     
-function harmext(MsFEMparam, PDEparam, X, Y, m, n, N_f, i)
-    # %compute the local harmonic extension corresponding to each coarse edge
-    # %i=1, corresponds to the horizontal edges, i=2, corresponds to the vertical
-    # %ones. m, n are indices
+    BasisFuns = MsFEMstore.BasisFuns
+    Fine_localAs = MsFEMstore.Fine_localAs
+    Fine_localMs = MsFEMstore.Fine_localMs
     
-    # %use dirichlet solver for adajacent patches, obtaining L1.L2 as a linear
-    # %combination of the corresponding patches, N is matrix of the inner product
-    
-    b = reduce(vcat,collect.([1:N_f+1,N_f+2:N_f+1:(N_f+1)*(N_f+1),2*(N_f+1):N_f+1:(N_f+1)*(N_f+1),N_f*N_f+N_f+2:(N_f+1)*(N_f+1)-1]));
-    K1 = basefun(MsFEMparam, PDEparam, X, Y, m, n, N_f);
-    f1= zeros(4*N_f,N_f-1);
-    f2= zeros(4*N_f,N_f-1);
-    if i==1
-        K2 = basefun(MsFEMparam, PDEparam, X, Y, m, n+1, N_f);
-        f1[3*N_f+2:4*N_f,:] .= sparse(LinearAlgebra/I,N_f-1,N_f-1)
-        f2[2:N_f,:] = sparse(LinearAlgebra.I,N_f-1,N_f-1)
-    else
-        K2 = basefun(MsFEMparam, PDEparam, X, Y, m+1, n, N_f);
-        f1[2*N_f+2:3*N_f,:] .= sparse(LinearAlgebra.I,N_f-1,N_f-1)
-        f2[N_f+2:2*N_f,:] .= sparse(LinearAlgebra.I,N_f-1,N_f-1)
+    # bubble part
+    Ne = MsFEMparam.Ne
+    sol_bubble = zeros(Ne+1,Ne+1)
+
+
+    ### right hand side
+    Nce = MsFEMparam.Nce
+    F = zeros((Nce+1)^2)
+    count = 4
+
+    # boundary location for bubble part
+    b = reduce(vcat,collect.(
+                [1:Nfe+1,
+                Nfe+2:Nfe+1:(Nfe+1)*(Nfe+1),
+                2*(Nfe+1):Nfe+1:(Nfe+1)*(Nfe+1),
+                Nfe*Nfe+Nfe+2:(Nfe+1)*(Nfe+1)-1]
+        )
+    )
+
+    @threads for ci = 1:Nce
+        for cj = 1:Nce 
+            xlow = MsFEMparam.CGrid_x[ci];
+            xhigh = MsFEMparam.CGrid_x[ci+1];
+            ylow = MsFEMparam.CGrid_y[cj];
+            yhigh = MsFEMparam.CGrid_y[cj+1];
+            x = collect(LinRange(xlow, xhigh, Nfe+1))
+            y = collect(LinRange(ylow, yhigh, Nfe+1))
+            f = [PDEparam.rhs(x[i],y[j]) for j in 1:Nfe+1 for i in 1:Nfe+1]
+            val = f'*Fine_localMs[ci,cj]*BasisFuns[:,:,ci,cj]
+            for p = 1:count
+                global_p = MsFEMparam.ElemNode_loc2glo(Nce, ci, cj, p);
+                F[global_p] += val[p]
+            end
+
+            Diri_A = copy(Fine_localAs[ci, cj]); 
+            Diri_A[b,:] .= 0; 
+            F[b] .= 0
+            Diri_A[b,b] .= sparse(I, length(b),length(b));
+            sol_bubble[(ci-1)*Nfe+1:(ci)*Nfe+1, (cj-1)*Nfe+1:(cj)*Nfe+1] = Diri_A\(Fine_localMs[ci,cj]*f)
+        end
     end
-    M1 = K1;
-    M2 = K2;
-    F1 = -K1[:,b]*f1;
-    K1[b,:] .=0; K1[:,b] .= 0; F1[b,:] = f1; 
-    K1[b,b] = sparse(LinearAlgebra.I,length(b),length(b))
-    L1 = K1\F1;
-    F2 = -K2[:,b]*f2;
-    K2[b,:] .= 0; K2[:,b] .= 0; F2[b,:] = f2; 
-    K2[b,b] .= sparse(LinearAlgebra.I,length(b),length(b))
-    L2=K2\F2;
+
+
+    ### boundary part
+    # location
+    b = reduce(vcat,collect.([
+        1:Nce+1,Nce+2:Nce+1:(Nce+1)*(Nce+1),2*(Nce+1):Nce+1:(Nce+1)*(Nce+1),
+        Nce*Nce+Nce+2:(Nce+1)*(Nce+1)-1,(Nce+1)^2+1:(Nce+1)^2
+        ]));
+
+    # assemby
+    A[b,:] .= 0; 
+
+    # for general Dirichlet boundary condition
+    F[1:Nce+1] .= PDEparam.bdy_Diri.(MsFEMparam.CGrid_x,0.0)
+    F[Nce+2:Nce+1:(Nce+1)*(Nce+1)] .= PDEparam.bdy_Diri.(0.0, MsFEMparam.CGrid_y[2:end])
+    F[2*(Nce+1):Nce+1:(Nce+1)*(Nce+1)] .= PDEparam.bdy_Diri.(1.0, MsFEMparam.CGrid_y[2:end])
+    F[Nce*Nce+Nce+2:(Nce+1)*(Nce+1)-1] .= PDEparam.bdy_Diri.(MsFEMparam.CGrid_x[2:end-1],1.0)
     
-    N1 = L1'*M1*L1;
-    N2 = L2'*M2*L2;
-    N = N1 + N2;
-    return L1, L2, N
+    A[b,b] .= sparse(I, length(b),length(b));
+    return A, F, sol_bubble
+
 end
-    
-function basefun1(MsFEMparam, PDEparam, X, Y, m, n, N_f,t)
-    # % solve a combination of fine basis functions, assembling the oversampled
-    # % stiffness matrix
-    # %t=1, corresponds to the horizontal edges, t=2, corresponds to the vertical
-    # %ones. m, n are indices
-    
-    # % the function serves as to solve local boundary value problem on the 
-    # % coarse mesh, based on the stiffness matrix in "elementstiff1"
-    
-    # % for the sake of simplicity, we temporarily use nodes of the fine mesh
-    # % as the same nodes that we use when we invoke numerical quadrature to
-    # % assemble the global stiffness matrix, the rationale being that we
-    # % can either increase the scale of fine mesh or increase the quadrature 
-    # % accuracy if we want to do higher order.... (because locally on fine
-    # % meshes, the basis function is simply a linear function
-    
-    # % setting parameters H is the size of the coarse mesh, N is the number of
-    # %nodes on each coarse rectangular, i.e. fine mesh size is H/N
-    
-    
-    # %N needs to be inputted !!!!
-    N_c = length(X)-1;
-    if t==1
-        if m==1
-            x = linspace(X(m), X(m+2), 2*N_f+1);
-        elseif m==N_c
-            x = linspace(X(m-1), X(m+1), 2*N_f+1);
-        else
-            x = linspace(X(m-1), X(m+2), 3*N_f+1);
-        end
-        y = linspace(Y(n), Y(n+2), 2*N_f+1);
-    else
-        if n==1
-            y = linspace(Y(n), Y(n+2), 2*N_f+1);
-        elseif n==N_c
-            y = linspace(Y(n-1), Y(n+1), 2*N_f+1);
-        else
-            y = linspace(Y(n-1), Y(n+2), 3*N_f+1);
-        end
-        x = linspace(X(m), X(m+2), 2*N_f+1);
-    end
-    
-    nNodes = length(x)*length(y);
-    N_x=length(x)-1;
-    N_y=length(y)-1;
-    # sparse assembling
-    I=zeros(16*N_x*N_y,1);J=I;K=I;
-    
-    for i = 1:N_x
-        for j = 1:N_y  
-            [k] = elementstiff1(PDEparam, x, y, i, j);
-            for p = 1:4
-                global_p = MsFEMparam.loc2glo(N_x, i, j, p);
-                for q = 1:4
-                    index=16*N_y*(i-1)+16*(j-1)+4*(p-1)+q;
-                    global_q = MsFEMparam.loc2glo(N_x, i, j, q);
-                    I[index] = global_p;
-                    J[index] = global_q;
-                    K[index] = k[p, q];
-                end
+
+function MsFEM_CoarseSolver(MsFEMparam,PDEparam)
+    MsFEMstore = MsFEM_StiffnMassAssembly(MsFEMparam,PDEparam)
+    A, F, sol_bubble = MsFEM_BdyRhsAssembly(MsFEMparam,PDEparam,MsFEMstore)
+    coarse_sol = A\F
+    @info "[Linear solver] linear system solved, coarse sol obtained"
+
+    return coarse_sol, sol_bubble, MsFEMstore
+end
+
+function MsFEM_FineConstruct(coarse_sol, sol_bubble, MsFEMstore)
+    Nce = MsFEMparam.Nce
+    Nfe = MsFEMparam.Nfe
+    BasisFuns = MsFEMstore.BasisFuns
+    fine_sol = zeros(Nce*Nfe+1,Nce*Nfe+1)
+    count = 4
+
+    @threads for ci in 1:Nce
+        for cj in 1:Nce
+            for p = 1:count
+                global_p = MsFEMparam.ElemNode_loc2glo(Nce, ci, cj, p);
+                fine_sol[(ci-1)*Nfe+1:(ci)*Nfe+1, (cj-1)*Nfe+1:(cj)*Nfe+1] += coarse_sol[global_p]*reshape(BasisFuns[:,p,ci,cj],Nfe+1,Nfe+1)
             end
         end
     end
-    
-    # assemble boundary
-    
-    A=sparse(I,J,K,nNodes,nNodes);
-    
-    return A, N_x, N_y, x, y
+
+    # repeated counting
+    # edges
+    fine_sol[1:end,Nfe+1:Nfe:end-Nfe] /= 2
+    fine_sol[Nfe+1:Nfe:end-Nfe,1:end] /= 2
+
+    @info "[Reconstruction] fine scale solution reconstructed"
+    return reshape(fine_sol+sol_bubble,(Nce*Nfe+1)^2)
+end
+
+function MsFEM_SubsequentSolve(MsFEMparam,PDEparam,MsFEMstore)
+    A, F, sol_bubble = MsFEM_BdyRhsAssembly(MsFEMparam,PDEparam,MsFEMstore)
+    coarse_sol = A\F
+    @info "[Linear solver] linear system solved, coarse sol obtained"
+    return coarse_sol, sol_bubble, MsFEMstore
 end
