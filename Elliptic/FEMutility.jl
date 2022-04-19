@@ -4,6 +4,11 @@ using Logging
 import Base.Threads: nthreads, @threads
 
 
+# some lesson: exact calculation of integral of tent functions leads to best accuracy!
+# can either pull out some functions (e.g. a, f, or u) out of the integral and then use exact formula for tent functions, or can write a, f, u as linear combination of tent functions and obtain exact integral for the interactions between tent functions
+# the latter approach is safer. The former approach needs to pay attention to boundaries, where basis functions change
+# thus, combine accuracy and convenience: use stiffness and mass matrices, but for the boundary condition, can use the latter approach (do not need to introduce boundary element; this is why we always implement neuman and robin boundary condition in an open interval, in which case there is no boundary of boundary issues)
+
 struct FEM_2dUnifQuadMesh{Ti,Tf}
     Ne::Ti # number of elements in each dimension
     Grid_x::Vector{Tf} # uniform grid in x axis, boundary included
@@ -69,9 +74,8 @@ function FEM_StiffnMassAseembly(FEMparam,PDEparam)
     
     println("[multithreading] using ", Threads.nthreads(), " threads")
     # run over all elements
-    @threads
     for i = 1:Ne
-        for j = 1:Ne 
+        @threads for j = 1:Ne 
             # local stiffness and local mass matrix
             local_A, local_M = FEM_LocalAssembly(FEMparam,PDEparam, i, j)
 
@@ -90,7 +94,7 @@ function FEM_StiffnMassAseembly(FEMparam,PDEparam)
     end
     A = sparse(Icol,Jrow,Aval,(Ne+1)^d,(Ne+1)^d)
     M = sparse(Icol,Jrow,Mval,(Ne+1)^d,(Ne+1)^d)
-    @info "[Assembly] finish assembly of Stiffness and Mass matrice"
+    @info "[Assembly] finish assembly of stiffness and mass matrice"
     return FEM_2dMatrices(A,M)
 end
 
@@ -111,7 +115,6 @@ function FEM_BdyRhsAssembly(FEMparam,PDEparam,FEMmtx)
     bdy_points = FEMparam.Bdy_coordinates
     bdy_type = PDEparam.bdy_type.(bdy_points[:,1],bdy_points[:,2])
     
-    # @info bdy_type
     # Dirichlet boundary
     Diri_loc = findall(x->x==1,bdy_type)
     if length(Diri_loc) > 0
@@ -126,7 +129,7 @@ function FEM_BdyRhsAssembly(FEMparam,PDEparam,FEMmtx)
     if length(Neum_loc) > 0
         Neum_bdy = PDEparam.bdy_Neum.(bdy_points[Neum_loc,1],bdy_points[Neum_loc,2])
         Neum_loc = bdy_loc[Neum_loc] # global index
-        F[Neum_loc] += 1/(Ne)*Neum_bdy # Simpson's quadrature
+        F[Neum_loc] += 1/(Ne)*Neum_bdy 
     end
 
     Robin_loc = findall(x->x==3,bdy_type)
@@ -137,12 +140,11 @@ function FEM_BdyRhsAssembly(FEMparam,PDEparam,FEMmtx)
         Robin_bdy1 = vcat([Robin_bdy[i][1] for i in 1:length(Robin_loc)])
         Robin_bdy2 = vcat([Robin_bdy[i][2] for i in 1:length(Robin_loc)])
         Robin_loc = bdy_loc[Robin_loc] # global index
-        A[Robin_loc,:] = A[Robin_loc,:] + diagm(Robin_bdy1)*M[Robin_loc,:]
+        A[Robin_loc,Robin_loc] = A[Robin_loc,Robin_loc] + diagm(Robin_bdy1)*1/(Ne)
         F[Robin_loc] += 1/(Ne)*Robin_bdy2
     end
 
     @info "[Assembly] finish incorporating boundary data"
-    
     return A, F
 end
 
@@ -161,12 +163,13 @@ function FEM_LocalAssembly(FEMparam, PDEparam, i, j)
     local_A = zeros(4,4)
     local_M = copy(local_A)
 
-    # mid-point quadrature for stiffness matrix
+    # mid-point of a, then exact quadrature for tent functions
+    # f is written as sum of nodal values * tent functions
     for i = 1:4 
         for j = 1:4
             if i==j
                 local_A[i,j] = 2/3*PDEparam.a(mid_x,mid_y);
-                local_M[i,j] = 1/9/Ne^2
+                local_M[i,j] = 1/9/Ne^2 # exact
             elseif i==j+2 || i==j-2
                 local_A[i,j] = -1/3*PDEparam.a(mid_x,mid_y);
                 local_M[i,j] = 1/36/Ne^2
@@ -198,5 +201,6 @@ end
 function FEM_SubsequentSolve(FEMparam,PDEparam,FEMmtx)
     A, F = FEM_BdyRhsAssembly(FEMparam,PDEparam,FEMmtx)
     sol = A\F
+    @info "[Linear solver] linear system solved"
     return sol
 end

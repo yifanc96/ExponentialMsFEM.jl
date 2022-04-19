@@ -3,6 +3,7 @@ include("FEMutility.jl")
 using Logging
 using ForwardDiff
 using BenchmarkTools
+using PyPlot
 
 ## PDE parameters
 function afun(t,s)
@@ -37,21 +38,22 @@ function bdy_Diri(t,s)
 end
 
 function bdy_Neum(t,s)
-    return -ForwardDiff.derivative(t->u([t,s]),t)
+    return ForwardDiff.derivative(t->u([t,s]),t)
 end
 
 function bdy_Robin(t,s)
     function bdy_Robin1(t,s)
         return 1
     end
-    return bdy_Robin1(t,s), ForwardDiff.derivative(t->u([t,s]),t) + bdy_Robin1(t,s)*u([t,s])
+    return bdy_Robin1(t,s), -ForwardDiff.derivative(t->u([t,s]),t) + bdy_Robin1(t,s)*u([t,s])
 end
 
 function bdy_type(t,s)
     Type = nothing
-    if t == 0
-        Type = 1
-    elseif t == 1 && 0.2<s<0.6
+    # Neuman and Robin boundary condition should be on open intervals
+    if t == 0 && 0<s<1
+        Type = 3
+    elseif t == 1 && 0<s<1
         Type = 2
     else
         Type = 1
@@ -67,21 +69,21 @@ PDEparam = VarElliptic(afun,rhs,bdy_type, bdy_Diri, bdy_Neum, bdy_Robin)
 
 
 ## FEM parameters
-Nf = 2^9 # Nf elements each dimension
-FEMparam = FEM_2dUnifQuadMesh(Nf)
+Ne = 2^9 # Ne elements each dimension
+FEMparam = FEM_2dUnifQuadMesh(Ne)
 
 
 ## Solver: get nodal values and mass matrix
 # assembly + linear solve
 @time FEMsol, FEMmtx = FEM_Solver(FEMparam,PDEparam)
 # subsequent linear solve; rhs and bdy can be different 
-# @time FEMsol = FEM_SubsequentSolve(FEMparam,PDEparam,FEMmtx)
+@time FEMsol = FEM_SubsequentSolve(FEMparam,PDEparam,FEMmtx)
 
 
 ## error: can use when truth exists
 x = FEMparam.Grid_x
 y = FEMparam.Grid_y
-truth = [u([x[i],y[j]]) for j in 1:Nf+1 for i in 1:Nf+1]
+truth = [u([x[i],y[j]]) for j in 1:Ne+1 for i in 1:Ne+1]
 Linf = maximum(abs.(truth - FEMsol)) / maximum(abs.(truth))
 L2 = sqrt((truth - FEMsol)'*FEMmtx.M*(truth - FEMsol) / (truth'*FEMmtx.M*truth))
 energy = sqrt((truth - FEMsol)'*FEMmtx.A*(truth - FEMsol) / (truth'*FEMmtx.A*truth))
@@ -90,9 +92,15 @@ energy = sqrt((truth - FEMsol)'*FEMmtx.A*(truth - FEMsol) / (truth'*FEMmtx.A*tru
 
 
 # ## plot
-# function meshgrid(x,y)
-#     xx = repeat(x',length(y),1)
-#     yy = repeat(y,1,length(x))
-#     return xx,yy
-# end
-# xx, yy = meshgrid(x, y)
+function meshgrid(x,y)
+    xx = repeat(x',length(y),1)
+    yy = repeat(y,1,length(x))
+    return xx,yy
+end
+xx, yy = meshgrid(x, y)
+
+result=reshape(truth - FEMsol,Ne+1,Ne+1)'
+figure()
+plt.contourf(xx,yy,abs.(result))
+colorbar()
+display(gcf())
