@@ -1,3 +1,6 @@
+# The target is to develop an efficient FEM for quadrilateral mesh, for research purposes. Here, the quadrilaternal mesh is axis parallel, so it is easy to describe its elements, boundary and neighboring geometry
+# for more complicated meshing, one may resort to third party software to get the geometry. Once geometry obtained, FEM is easy.
+
 using SparseArrays
 using LinearAlgebra
 using Logging
@@ -15,7 +18,7 @@ struct FEM_2dUnifQuadMesh{Ti,Tf}
     Grid_y::Vector{Tf} # uniform grid in y axis, boundary included
     Bdy_coordinates::Matrix{Tf} # bdy coordinates, used for getting boundary data
     Bdy_indices::Vector{Ti} # bdy index among all the nodes; ordering: one runs over x first then y
-    ElemNode_loc2glo::Function # local index (node of an element) to global index (global indexed node); one runs over i first then j
+    ElemNode_loc2glo::Function # local index of an element to global index of its node; one runs over i first then j
 end
 
 # store the stiffness and mass matrix
@@ -135,7 +138,7 @@ function FEM_BdyRhsAssembly(FEMparam,PDEparam,FEMstore)
     Robin_loc = findall(x->x==3,bdy_type)
     if length(Robin_loc) > 0
         Robin_bdy = [PDEparam.bdy_Robin.(bdy_points[Robin_loc[i],1],bdy_points[Robin_loc[i],2]) for i in 1:length(Robin_loc)]
-        Robin_bdy = reduce(vcat, Robin_bdy)
+        # Robin_bdy = reduce(vcat, Robin_bdy)
         
         Robin_bdy1 = vcat([Robin_bdy[i][1] for i in 1:length(Robin_loc)])
         Robin_bdy2 = vcat([Robin_bdy[i][2] for i in 1:length(Robin_loc)])

@@ -7,22 +7,22 @@ using PyPlot
 
 ## PDE parameters
 function afun(t,s)
-    # epsilon1 = 1/5;
-    # epsilon2 = 1/13;
-    # epsilon3 = 1/17;
-    # epsilon4 = 1/31;
-    # epsilon5 = 1/65;
-    # return 1/6*((1.1+sin(2*pi*t/epsilon1))/(1.1+sin(2*pi*s/epsilon1))+
-    #         (1.1+sin(2*pi*s/epsilon2))/(1.1+cos(2*pi*t/epsilon2))+
-    #         (1.1+cos(2*pi*t/epsilon3))/(1.1+sin(2*pi*s/epsilon3))+
-    #         (1.1+sin(2*pi*s/epsilon4))/(1.1+cos(2*pi*t/epsilon4))+
-    #         (1.1+cos(2*pi*t/epsilon5))/(1.1+sin(2*pi*s/epsilon5))+
-    #         sin(4*s^2*t^2)+1);
-    return 1.0
+    epsilon1 = 1/5;
+    epsilon2 = 1/13;
+    epsilon3 = 1/17;
+    epsilon4 = 1/31;
+    epsilon5 = 1/65;
+    return 1/6*((1.1+sin(2*pi*t/epsilon1))/(1.1+sin(2*pi*s/epsilon1))+
+            (1.1+sin(2*pi*s/epsilon2))/(1.1+cos(2*pi*t/epsilon2))+
+            (1.1+cos(2*pi*t/epsilon3))/(1.1+sin(2*pi*s/epsilon3))+
+            (1.1+sin(2*pi*s/epsilon4))/(1.1+cos(2*pi*t/epsilon4))+
+            (1.1+cos(2*pi*t/epsilon5))/(1.1+sin(2*pi*s/epsilon5))+
+            sin(4*s^2*t^2)+1);
+    # return 1.0
 end
 
 function u(x)
-    return sin(0.5*π*x[1])*sin(π*x[2])*exp(x[1]+2*x[2])
+    return sin(2*π*x[1])*sin(π*x[2])*exp(x[1]+2*x[2])
 end
 
 function rhs(t,s)
@@ -52,9 +52,9 @@ function bdy_type(t,s)
     Type = nothing
     # Neuman and Robin boundary condition should be on open intervals
     if t == 0 && 0<s<1
-        Type = 3
+        Type = 1
     elseif t == 1 && 0<s<1
-        Type = 2
+        Type = 1
     else
         Type = 1
     end
@@ -69,7 +69,7 @@ PDEparam = VarElliptic(afun,rhs,bdy_type, bdy_Diri, bdy_Neum, bdy_Robin)
 
 
 ## FEM parameters
-Ne = 2^5 # Ne elements each dimension
+Ne = 2^10 # Ne elements each dimension
 FEMparam = FEM_2dUnifQuadMesh(Ne)
 
 

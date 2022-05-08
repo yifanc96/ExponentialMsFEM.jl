@@ -1,16 +1,30 @@
+# The target is to develop an efficient MsFEM for quadrilateral mesh, for research purposes. Here, the quadrilaternal mesh is axis parallel, so it is easy to describe its elements, boundary and neighboring geometry
+
 using SparseArrays
 using LinearAlgebra
 using Logging
 import Base.Threads: nthreads, @threads
 
+# 2d 2scale mesh
+# element easily described by x and y coordinates [Nce*Nce elements]
+# element boundary easily described by a vector of boundary location (ordering: x increases first y second) [write a function/attribute]
+
+### simple boundary treatment: just run over interior and boundaries separately (only for the boundary part use the if-else to select the correct b.c.). Each time run over it, construct the RHS and boundary data on the fly (not costly, as only once)
+
+# basis function change when it is near to the boudary
+# write a MsFEM that can support subsequent solve for the SAME boundary type!
+# the key is the get a fine scale solver (surrogate model) for general problem; provide a coarse/fine scale solver for multiscale problems
+
 struct MsFEM_2d2ScaleUnifQuadMesh{Ti,Tf}
     Nce::Ti # number of coarse elements in each dimension
     Nfe::Ti # number of fine elements in each coarse element
-    Ne::Ti # number of fine elements in each dimension
+    Ne::Ti # number of total fine elements in each dimension
     CGrid_x::Vector{Tf} # coarse uniform grid in x axis, boundary included
     CGrid_y::Vector{Tf} # coarse uniform grid in y axis, boundary included
-    ElemNode_loc2glo::Function # local index (node of an element) to global index (global indexed node); one runs over i first then j
+    ElemNode_loc2glo::Function # local index (node of an element) to global index (global indexed node); one runs over x first then y
     # all but the first attribute are automatically generated
+    LocalBdyIndice::Vector{Ti}
+    LocalBdyCondition::Matrix{Tf}
 end
 
 struct MsFEM_store{Ti,Tf}
@@ -36,10 +50,29 @@ function MsFEM_2d2ScaleUnifQuadMesh(Nce, Nfe)
         return global_idx  
     end
 
+    # local indices for local element
+    LocalBdyIndice = reduce(vcat,collect.(
+        [1:Nfe+1,
+        Nfe+2:Nfe+1:(Nfe+1)*(Nfe+1),
+        2*(Nfe+1):Nfe+1:(Nfe+1)*(Nfe+1),
+        Nfe*Nfe+Nfe+2:(Nfe+1)*(Nfe+1)-1]
+        )
+    )
+
+    # linear basis functions on the boundary (4 basis functions, equal 1 at one node and 0 at other nodes)
+    LocalBdyCondition = reduce(vcat, collect.(
+        [LinRange(1, 0, Nfe+1), LinRange(1-1/Nfe, 0, Nfe), zeros(Nfe), zeros(Nfe-1), 
+        LinRange(0, 1, Nfe+1), zeros(Nfe), LinRange(1-1/Nfe, 0, Nfe), zeros(Nfe-1),
+        zeros(Nfe+1), zeros(Nfe), LinRange(1/Nfe, 1, Nfe), LinRange(1/Nfe, 1-1/Nfe, Nfe-1),
+        zeros(Nfe+1), LinRange(1/Nfe, 1, Nfe), zeros(Nfe), LinRange(1-1/Nfe, 1/Nfe, Nfe-1)]
+        )
+    )
+    LocalBdyCondition = reshape(LocalBdyCondition, 4*Nfe, 4)
+
     @info "[Mesh generation] mesh generated, $(Nce+1) coarse nodes a in each dimension"
     @info "[Mesh generation] in each coarse element, $(Nfe+1) fine nodes; in total $(Nce*Nfe+1) nodes in each dimension"
 
-    return MsFEM_2d2ScaleUnifQuadMesh(Nce,Nfe,Nce*Nfe,x,y,ElemNode_loc2glo)
+    return MsFEM_2d2ScaleUnifQuadMesh(Nce,Nfe,Nce*Nfe,x,y,ElemNode_loc2glo, LocalBdyIndice, LocalBdyCondition)
 end
 
 function MsFEM_StiffnMassAssembly(MsFEMparam, PDEparam)
@@ -88,23 +121,25 @@ function MsFEM_LocalBasis(MsFEMparam, PDEparam, ci, cj)
     Nfe = MsFEMparam.Nfe
 
     # boundary location
-    b = reduce(vcat,collect.(
-        [1:Nfe+1,
-        Nfe+2:Nfe+1:(Nfe+1)*(Nfe+1),
-        2*(Nfe+1):Nfe+1:(Nfe+1)*(Nfe+1),
-        Nfe*Nfe+Nfe+2:(Nfe+1)*(Nfe+1)-1]
-        )
-    )
+    b = MsFEMparam.LocalBdyIndice
+    # b = reduce(vcat,collect.(
+    #     [1:Nfe+1,
+    #     Nfe+2:Nfe+1:(Nfe+1)*(Nfe+1),
+    #     2*(Nfe+1):Nfe+1:(Nfe+1)*(Nfe+1),
+    #     Nfe*Nfe+Nfe+2:(Nfe+1)*(Nfe+1)-1]
+    #     )
+    # )
 
     # linear boundary conditions
-    vec_bd_f = reduce(vcat, collect.(
-        [LinRange(1, 0, Nfe+1), LinRange(1-1/Nfe, 0, Nfe), zeros(Nfe), zeros(Nfe-1), 
-        LinRange(0, 1, Nfe+1), zeros(Nfe), LinRange(1-1/Nfe, 0, Nfe), zeros(Nfe-1),
-        zeros(Nfe+1), zeros(Nfe), LinRange(1/Nfe, 1, Nfe), LinRange(1/Nfe, 1-1/Nfe, Nfe-1),
-        zeros(Nfe+1), LinRange(1/Nfe, 1, Nfe), zeros(Nfe), LinRange(1-1/Nfe, 1/Nfe, Nfe-1)]
-        )
-    )
-    bd_f = reshape(vec_bd_f, 4*Nfe, 4) # 4 edges
+    # vec_bd_f = reduce(vcat, collect.(
+    #     [LinRange(1, 0, Nfe+1), LinRange(1-1/Nfe, 0, Nfe), zeros(Nfe), zeros(Nfe-1), 
+    #     LinRange(0, 1, Nfe+1), zeros(Nfe), LinRange(1-1/Nfe, 0, Nfe), zeros(Nfe-1),
+    #     zeros(Nfe+1), zeros(Nfe), LinRange(1/Nfe, 1, Nfe), LinRange(1/Nfe, 1-1/Nfe, Nfe-1),
+    #     zeros(Nfe+1), LinRange(1/Nfe, 1, Nfe), zeros(Nfe), LinRange(1-1/Nfe, 1/Nfe, Nfe-1)]
+    #     )
+    # )
+    # bd_f = reshape(vec_bd_f, 4*Nfe, 4) # 4 edges
+    bd_f = MsFEMparam.LocalBdyCondition
 
     fine_localA, fine_localM = MsFEM_LocalHarmExt(MsFEMparam, PDEparam, ci, cj); # harmonic extension matrix
     Diri_A = copy(fine_localA); # local inner product A
@@ -205,13 +240,14 @@ function MsFEM_BdyRhsAssembly(MsFEMparam, PDEparam, MsFEMstore)
     count = 4
 
     # boundary location for bubble part
-    b = reduce(vcat,collect.(
-                [1:Nfe+1,
-                Nfe+2:Nfe+1:(Nfe+1)*(Nfe+1),
-                2*(Nfe+1):Nfe+1:(Nfe+1)*(Nfe+1),
-                Nfe*Nfe+Nfe+2:(Nfe+1)*(Nfe+1)-1]
-        )
-    )
+    b = MsFEMparam.LocalBdyIndice
+    # b = reduce(vcat,collect.(
+    #             [1:Nfe+1,
+    #             Nfe+2:Nfe+1:(Nfe+1)*(Nfe+1),
+    #             2*(Nfe+1):Nfe+1:(Nfe+1)*(Nfe+1),
+    #             Nfe*Nfe+Nfe+2:(Nfe+1)*(Nfe+1)-1]
+    #     )
+    # )
 
     @threads for ci = 1:Nce
         for cj = 1:Nce 
@@ -222,22 +258,27 @@ function MsFEM_BdyRhsAssembly(MsFEMparam, PDEparam, MsFEMstore)
             x = collect(LinRange(xlow, xhigh, Nfe+1))
             y = collect(LinRange(ylow, yhigh, Nfe+1))
             f = [PDEparam.rhs(x[i],y[j]) for j in 1:Nfe+1 for i in 1:Nfe+1]
-            val = f'*Fine_localMs[ci,cj]*BasisFuns[:,:,ci,cj]
+
+            # assembly global rhs
+            @views val = f'*Fine_localMs[ci,cj]*BasisFuns[:,:,ci,cj]
             for p = 1:count
                 global_p = MsFEMparam.ElemNode_loc2glo(Nce, ci, cj, p);
                 F[global_p] += val[p]
             end
 
+            # assembly local rhs for bubble part
             Diri_A = copy(Fine_localAs[ci, cj]); 
-            Diri_A[b,:] .= 0; 
-            F[b] .= 0
+            Diri_A[b,:] .= 0;
             Diri_A[b,b] .= sparse(I, length(b),length(b));
-            sol_bubble[(ci-1)*Nfe+1:(ci)*Nfe+1, (cj-1)*Nfe+1:(cj)*Nfe+1] = Diri_A\(Fine_localMs[ci,cj]*f)
+            local_F = Fine_localMs[ci,cj]*f
+            local_F[b] .= 0
+
+            @views sol_bubble[(ci-1)*Nfe+1:(ci)*Nfe+1, (cj-1)*Nfe+1:(cj)*Nfe+1] = Diri_A\(local_F)
         end
     end
 
 
-    ### boundary part
+    ### global boundary part
     # location
     b = reduce(vcat,collect.([
         1:Nce+1,Nce+2:Nce+1:(Nce+1)*(Nce+1),2*(Nce+1):Nce+1:(Nce+1)*(Nce+1),
@@ -247,7 +288,7 @@ function MsFEM_BdyRhsAssembly(MsFEMparam, PDEparam, MsFEMstore)
     # assemby
     A[b,:] .= 0; 
 
-    # for general Dirichlet boundary condition
+    # for Dirichlet boundary condition
     F[1:Nce+1] .= PDEparam.bdy_Diri.(MsFEMparam.CGrid_x,0.0)
     F[Nce+2:Nce+1:(Nce+1)*(Nce+1)] .= PDEparam.bdy_Diri.(0.0, MsFEMparam.CGrid_y[2:end])
     F[2*(Nce+1):Nce+1:(Nce+1)*(Nce+1)] .= PDEparam.bdy_Diri.(1.0, MsFEMparam.CGrid_y[2:end])
@@ -276,20 +317,28 @@ function MsFEM_FineConstruct(coarse_sol, sol_bubble, MsFEMstore)
 
     @threads for ci in 1:Nce
         for cj in 1:Nce
+            val = zeros(Nfe+1,Nfe+1)
+
             for p = 1:count
                 global_p = MsFEMparam.ElemNode_loc2glo(Nce, ci, cj, p);
-                fine_sol[(ci-1)*Nfe+1:(ci)*Nfe+1, (cj-1)*Nfe+1:(cj)*Nfe+1] += coarse_sol[global_p]*reshape(BasisFuns[:,p,ci,cj],Nfe+1,Nfe+1)
+                val += coarse_sol[global_p]*reshape(BasisFuns[:,p,ci,cj],Nfe+1,Nfe+1)
             end
+            # for p = 1:count
+            #     global_p = MsFEMparam.ElemNode_loc2glo(Nce, ci, cj, p);
+            #     fine_sol[(ci-1)*Nfe+1:(ci)*Nfe+1, (cj-1)*Nfe+1:(cj)*Nfe+1] += coarse_sol[global_p]*reshape(BasisFuns[:,p,ci,cj],Nfe+1,Nfe+1)
+            # end
+            fine_sol[(ci-1)*Nfe+1:(ci)*Nfe+1, (cj-1)*Nfe+1:(cj)*Nfe+1] = val
         end
     end
 
     # repeated counting
     # edges
-    fine_sol[1:end,Nfe+1:Nfe:end-Nfe] /= 2
-    fine_sol[Nfe+1:Nfe:end-Nfe,1:end] /= 2
+    # fine_sol[1:end,Nfe+1:Nfe:end-Nfe] /= 2
+    # fine_sol[Nfe+1:Nfe:end-Nfe,1:end] /= 2
 
     @info "[Reconstruction] fine scale solution reconstructed"
     return reshape(fine_sol+sol_bubble,(Nce*Nfe+1)^2)
+    # return reshape(fine_sol,(Nce*Nfe+1)^2)
 end
 
 function MsFEM_SubsequentSolve(MsFEMparam,PDEparam,MsFEMstore)

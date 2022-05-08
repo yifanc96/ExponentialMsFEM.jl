@@ -1,3 +1,18 @@
+
+# 2d 2scale mesh
+# element easily described by x and y coordinates
+# element boundary easily described by a vector of boundary location (ordering: x increases first y second) [write functions]
+# oversampling element easily specified by x and y coordinates; oversampling boundary obtained by a vector of locations [write functions]
+struct ExpMsFEM_2d2ScaleUnifQuadMesh{Ti,Tf}
+    Nce::Ti # number of coarse elements in each dimension
+    Nfe::Ti # number of fine elements in each coarse element
+    Ne::Ti # number of total fine elements in each dimension
+    CGrid_x::Vector{Tf} # coarse uniform grid in x axis, boundary included
+    CGrid_y::Vector{Tf} # coarse uniform grid in y axis, boundary included
+    ElemNode_loc2glo::Function # local index (node of an element) to global index (global indexed node); one runs over i first then j
+    # all but the first attribute are automatically generated
+end
+
 function ExponentialMsFEM_GlobalAssembly(MsFEMparam, PDEparam, l)
     # N_c num of coarse intervals each dimension
     # N_f num of fine intervals in each coarse interval

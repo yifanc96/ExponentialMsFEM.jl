@@ -8,22 +8,22 @@ using PyPlot
 
 ## PDE parameters
 function afun(t,s)
-    # epsilon1 = 1/5;
-    # epsilon2 = 1/13;
-    # epsilon3 = 1/17;
-    # epsilon4 = 1/31;
-    # epsilon5 = 1/65;
-    # return 1/6*((1.1+sin(2*pi*t/epsilon1))/(1.1+sin(2*pi*s/epsilon1))+
-    #         (1.1+sin(2*pi*s/epsilon2))/(1.1+cos(2*pi*t/epsilon2))+
-    #         (1.1+cos(2*pi*t/epsilon3))/(1.1+sin(2*pi*s/epsilon3))+
-    #         (1.1+sin(2*pi*s/epsilon4))/(1.1+cos(2*pi*t/epsilon4))+
-    #         (1.1+cos(2*pi*t/epsilon5))/(1.1+sin(2*pi*s/epsilon5))+
-    #         sin(4*s^2*t^2)+1);
-    return 1.0
+    epsilon1 = 1/5;
+    epsilon2 = 1/13;
+    epsilon3 = 1/17;
+    epsilon4 = 1/31;
+    epsilon5 = 1/65;
+    return 1/6*((1.1+sin(2*pi*t/epsilon1))/(1.1+sin(2*pi*s/epsilon1))+
+            (1.1+sin(2*pi*s/epsilon2))/(1.1+cos(2*pi*t/epsilon2))+
+            (1.1+cos(2*pi*t/epsilon3))/(1.1+sin(2*pi*s/epsilon3))+
+            (1.1+sin(2*pi*s/epsilon4))/(1.1+cos(2*pi*t/epsilon4))+
+            (1.1+cos(2*pi*t/epsilon5))/(1.1+sin(2*pi*s/epsilon5))+
+            sin(4*s^2*t^2)+1);
+    # return 1.0
 end
 
 function u(x)
-    return sin(0.5*π*x[1])*sin(π*x[2])*exp(x[1]+2*x[2])
+    return sin(2*π*x[1])*sin(π*x[2])*exp(x[1]+2*x[2])
 end
 
 function rhs(t,s)
@@ -70,7 +70,7 @@ PDEparam = VarElliptic(afun,rhs,bdy_type, bdy_Diri, bdy_Neum, bdy_Robin)
 
 
 ## MsFEM parameters
-Nce = 2^6 # Ne elements each dimension
+Nce = 2^5 # Ne elements each dimension
 Nfe = 2^5
 MsFEMparam = MsFEM_2d2ScaleUnifQuadMesh(Nce,Nfe)
 
@@ -101,7 +101,7 @@ energy = sqrt((truth - coarse_sol)'*FEMstore.A*(truth - coarse_sol) / (truth'*FE
 
 Ne = Nce*Nfe
 FEMparam = FEM_2dUnifQuadMesh(Ne)
-@time FEMstore = FEM_StiffnMassAssembly(FEMparam,PDEparam)
+FEMstore = FEM_StiffnMassAssembly(FEMparam,PDEparam)
 x = FEMparam.Grid_x
 y = FEMparam.Grid_y
 
