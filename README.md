@@ -1,5 +1,6 @@
 # ExponentialMsFEM
 Exponentially convergent multiscale finite element methods
+Code for MsFEM is finished. Code for ExpMsFEM is not cleaned.
 
 ## Relevant papers:
 1. Yifan Chen, Thomas Y. Hou, Yixuan Wang. "[Exponential Convergence for Multiscale Linear Elliptic PDEs via Adaptive Edge Basis Functions](https://arxiv.org/abs/2007.07418)", SIAM Multiscale Modeling and Simulation, 2021.
